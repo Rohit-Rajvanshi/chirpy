@@ -29,7 +29,15 @@ type User struct {
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email     string    `json:"email"`
-		}
+	}
+
+type Chirp struct {
+		ID        uuid.UUID `json:"id"`
+		CreatedAt time.Time `json:"created_at"`
+		UpdatedAt time.Time `json:"updated_at"`
+		Body      string `json:"body"`
+		UserID    uuid.UUID `json:"user_id"`
+	}
 
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter , req *http.Request){
@@ -48,6 +56,7 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter , req *http.Request){
 
 
 
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter , req *http.Request){
 		cfg.fileserverHits.Add(1)
@@ -59,15 +68,6 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter , req *http.Request){
 	type requestBody struct {
 		Body string `json:"body"`
 		UserID uuid.UUID `json:"user_id"`
-	}
-
-
-	type Chirp struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Body      string `json:"body"`
-		UserID    uuid.UUID `json:"user_id"`
 	}
 
 	var rqBody requestBody
@@ -135,12 +135,57 @@ func removeProfanities(body string) string {
 			}
 		}
 	}
-	fmt.Print(strings.Join(splitBody , " "))
 	return strings.Join(splitBody , " ")
 }
 
 func respondwithError(w http.ResponseWriter , code int , msg string) error {
 	return respondwithJSON(w , code , map[string]string{"error" : msg})
+}
+
+func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter , req *http.Request) {
+	dbChirps , err := cfg.db.GetChirps(req.Context())
+	if err != nil {
+		respondwithError(w , 500 , "Something went wrong")
+		return 
+	}
+
+	var chirps []Chirp
+
+	for _ , elem := range dbChirps {
+		chirps = append(chirps , Chirp{
+			ID: elem.ID ,
+			CreatedAt: elem.CreatedAt,
+			UpdatedAt: elem.UpdatedAt,
+			Body: elem.Body,
+			UserID: elem.UserID,
+		})
+	}
+
+	respondwithJSON(w , 200 , chirps)
+
+}
+
+
+func (cfg *apiConfig) handlerGetChirpByID (w http.ResponseWriter , req *http.Request){
+	pathParam := req.PathValue("chirpID")
+	parsedUUId , err := uuid.Parse(pathParam)
+	if err != nil {
+		respondwithError(w , 500 , "Error Parsing the ID")
+		return 
+	}
+
+	dbChirp , err := cfg.db.GetChirpByID(req.Context() , parsedUUId)
+	if err != nil {
+		respondwithError(w , 404 , "Not Found")
+		return 
+	}
+
+	var chirp Chirp 
+	
+	chirp.ID , chirp.CreatedAt , chirp.UpdatedAt , chirp.Body , chirp.UserID = dbChirp.ID , dbChirp.CreatedAt , dbChirp.UpdatedAt , dbChirp.Body , dbChirp.UserID
+
+
+	respondwithJSON(w , 200 , chirp)
 }
 
 
@@ -208,6 +253,10 @@ func main(){
 	serveMux.HandleFunc("POST /admin/reset" , apiCfg.handlerReset)
 
 	serveMux.HandleFunc("POST /api/chirps" , apiCfg.handlerChirp)
+
+	serveMux.HandleFunc("GET /api/chirps" , apiCfg.handlerGetChirps)
+
+	serveMux.HandleFunc("GET /api/chirps/{chirpID}" , apiCfg.handlerGetChirpByID)
 
 	serveMux.HandleFunc("GET /api/healthz" , func(w http.ResponseWriter , req *http.Request){
 		w.Header().Set("Content-Type" , "text/plain; charset=utf-8")
