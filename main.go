@@ -15,6 +15,7 @@ import (
 	_ "github.com/lib/pq" 
 	"time"
 	"github.com/google/uuid"
+	"github.com/Rohit-Rajvanshi/chirpy/internal/auth"
 )
 
 
@@ -188,6 +189,47 @@ func (cfg *apiConfig) handlerGetChirpByID (w http.ResponseWriter , req *http.Req
 	respondwithJSON(w , 200 , chirp)
 }
 
+func (cfg *apiConfig) handlerLogin(w http.ResponseWriter , req *http.Request) {
+	type requestBody struct{
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	var rqBody requestBody
+
+	decoder := json.NewDecoder(req.Body)
+	err := decoder.Decode(&rqBody)
+	if err != nil {
+		respondwithError(w , 500 , "Something went wrong")
+		return
+	}
+
+	dbUser , err := cfg.db.GetUserByEmail(req.Context() , rqBody.Email)
+	if err != nil {
+		respondwithError(w , 401 , "Incorrect Email or Password")
+		return
+	}
+
+	match , err := auth.CheckPasswordHash(rqBody.Password , dbUser.HashedPassword)
+	if err != nil {
+		respondwithError(w , 500 , "Error")
+		return 
+	}
+
+	if match != true {
+		respondwithError(w , 401 , "Incorrect email or password")
+		return
+	}
+
+	var user User 
+	user.ID = dbUser.ID 
+	user.CreatedAt = dbUser.CreatedAt
+	user.UpdatedAt = dbUser.UpdatedAt
+	user.Email = dbUser.Email
+
+	respondwithJSON(w , 200 , user)
+}
+
 
 func main(){
 
@@ -218,6 +260,7 @@ func main(){
 	serveMux.HandleFunc("POST /api/users" , func(w http.ResponseWriter , req *http.Request){
 		type requestBody struct{
 			Email string `json:"email"`
+			Password string `json:"password"`
 		}
 
 		var rqBody requestBody
@@ -230,7 +273,10 @@ func main(){
 		}
 
 		var user User 
-		dbUser , err  := apiCfg.db.CreateUser(req.Context() , rqBody.Email)
+		dbUser , err  := apiCfg.db.CreateUser(req.Context() ,  database.CreateUserParams{
+			Email: rqBody.Email,
+			HashedPassword: auth.HashPassword(rqBody.Password),
+		})
 		if err != nil {
 			respondwithError(w , 400 , "Bad Input")
 			return 
@@ -257,6 +303,9 @@ func main(){
 	serveMux.HandleFunc("GET /api/chirps" , apiCfg.handlerGetChirps)
 
 	serveMux.HandleFunc("GET /api/chirps/{chirpID}" , apiCfg.handlerGetChirpByID)
+
+	serveMux.HandleFunc("POST /api/login/" , apiCfg.handlerLogin)
+
 
 	serveMux.HandleFunc("GET /api/healthz" , func(w http.ResponseWriter , req *http.Request){
 		w.Header().Set("Content-Type" , "text/plain; charset=utf-8")
