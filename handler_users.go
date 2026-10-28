@@ -91,24 +91,3 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter , req *http.Reques
 	respondwithJSON(w , 200 , user)
 }
 
-func (cfg *apiConfig) handlerRevoke (w http.ResponseWriter , req *http.Request) {
-	ref_token , err  := auth.GetBearerToken(req.Header)
-	if err != nil {
-		respondwithError(w , 401 , "Invalid Header")
-		return 
-	}
-
-	dbRefToken , err := cfg.db.GetToken(req.Context() , ref_token)
-	if err != nil {
-		respondwithError(w , 401 , "Invalid Token")
-		return 
-	}
-
-	RevokeErr := cfg.db.RevokeToken(req.Context() , dbRefToken.Token)
-	if RevokeErr != nil {
-		respondwithJSON(w , 500 , "Something went revoking the refresh token")
-		return 
-	}
-
-	respondwithJSON(w , 204 , nil)
-}
