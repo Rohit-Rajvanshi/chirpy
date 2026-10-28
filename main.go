@@ -23,6 +23,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	db *database.Queries
 	platform string 
+	secretToken string 
 }
 
 type User struct {
@@ -30,6 +31,8 @@ type User struct {
 		CreatedAt time.Time `json:"created_at"`
 		UpdatedAt time.Time `json:"updated_at"`
 		Email     string    `json:"email"`
+		Token 	  string    `json:"token"`
+		RefreshToken string `json:"refresh_token"`
 	}
 
 type Chirp struct {
@@ -68,7 +71,6 @@ func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 func (cfg *apiConfig) handlerChirp(w http.ResponseWriter , req *http.Request){
 	type requestBody struct {
 		Body string `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
 	}
 
 	var rqBody requestBody
@@ -84,11 +86,24 @@ func (cfg *apiConfig) handlerChirp(w http.ResponseWriter , req *http.Request){
 		return 
 	}
 
+	token , err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondwithError(w , 401 , "Error getting the token")
+		return 
+	}
+
+	authID , err := auth.ValidateJWT(token , cfg.secretToken)
+	if err != nil {
+		respondwithError(w , 401 , "Error validating the token")
+		return 
+	}
+
+
 	var chirp Chirp
 
 	dbChirp , err := cfg.db.CreateChirps(req.Context() , database.CreateChirpsParams{
 		Body: removeProfanities(rqBody.Body),
-		UserID: rqBody.UserID,
+		UserID: authID,
 	} )
 
 	if err != nil {
@@ -204,6 +219,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter , req *http.Request) {
 		return
 	}
 
+
 	dbUser , err := cfg.db.GetUserByEmail(req.Context() , rqBody.Email)
 	if err != nil {
 		respondwithError(w , 401 , "Incorrect Email or Password")
@@ -221,13 +237,140 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter , req *http.Request) {
 		return
 	}
 
+	expiryTime := 3600 * time.Second 
+
 	var user User 
 	user.ID = dbUser.ID 
 	user.CreatedAt = dbUser.CreatedAt
 	user.UpdatedAt = dbUser.UpdatedAt
 	user.Email = dbUser.Email
+	user.Token , err = auth.MakeJWT(user.ID , cfg.secretToken , expiryTime )
+	if err != nil {
+		respondwithError(w , 500 , "Error Creating Token")
+		return
+	}
+	user.RefreshToken = auth.MakeRefreshToken()
+	_ , err = cfg.db.CreateRefreshToken(req.Context() , database.CreateRefreshTokenParams{
+		Token : user.RefreshToken ,
+		UserID: user.ID,
+		ExpiresAt: time.Now().Add(60 * 24 * time.Hour ),
+	})
+	if err != nil {
+		respondwithError(w , 500 , "Error Saving the Refresh Token in DB")
+		return 
+	}
 
 	respondwithJSON(w , 200 , user)
+}
+
+func (cfg *apiConfig) handlerRefresh (w http.ResponseWriter , req *http.Request){
+	
+	type responseBody struct {
+		Token string `json:"token"`
+	}
+
+	ref_token , err  := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondwithError(w , 401 , "Invalid Header")
+		return 
+	}
+
+	dbRefToken , err := cfg.db.GetToken(req.Context() , ref_token)
+	if err != nil {
+		respondwithError(w , 401 , "Invalid Token")
+		return 
+	}
+
+	dbUser , err := cfg.db.GetUserFromRefreshToken( req.Context()  , dbRefToken.UserID)
+	if err != nil {
+		respondwithError(w , 401 , "User not Found")
+		return 
+	}
+
+	var rspBody responseBody
+
+	token , err  := auth.MakeJWT(dbUser.ID , cfg.secretToken , 3600 * time.Second)
+	if err != nil {
+		respondwithError(w , 500 , "Something went wrong")
+		return 
+	}
+
+	rspBody.Token = token
+
+	respondwithJSON(w , 200 , rspBody)
+}
+
+func (cfg *apiConfig) handlerRevoke (w http.ResponseWriter , req *http.Request) {
+	ref_token , err  := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondwithError(w , 401 , "Invalid Header")
+		return 
+	}
+
+	dbRefToken , err := cfg.db.GetToken(req.Context() , ref_token)
+	if err != nil {
+		respondwithError(w , 401 , "Invalid Token")
+		return 
+	}
+
+	RevokeErr := cfg.db.RevokeToken(req.Context() , dbRefToken.Token)
+	if RevokeErr != nil {
+		respondwithJSON(w , 500 , "Something went revoking the refresh token")
+		return 
+	}
+
+	respondwithJSON(w , 204 , nil)
+}
+
+
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter , req *http.Request) {
+	type requestBody struct{
+		Email string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	var rqBody requestBody
+
+	decoder := json.NewDecoder(req.Body)
+	err := decoder.Decode(&rqBody)
+	if err != nil {
+		respondwithError(w , 401 , "Something went wrong")
+		return
+	}
+
+	token , err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondwithError(w , 401 , "Invalid Header")
+		return 
+	}
+
+
+	userID , err := auth.ValidateJWT(token , cfg.secretToken)
+	if err != nil {
+		respondwithError(w , 401 , "Error validating the token")
+		return 
+	}
+
+	dbUser , err := cfg.db.UpdateUser(req.Context() , database.UpdateUserParams{
+		Email : rqBody.Email,
+		HashedPassword: auth.HashPassword(rqBody.Password),
+		ID: userID,
+	})
+	if err != nil {
+		respondwithError(w , 500 , "Error updating the user")
+		return 
+	}
+
+	var user User 
+
+	user.ID = dbUser.ID 
+	user.CreatedAt = dbUser.CreatedAt
+	user.UpdatedAt = dbUser.UpdatedAt
+	user.Email = dbUser.Email
+
+
+	respondwithJSON(w , 200 , user)
+
 }
 
 
@@ -255,6 +398,8 @@ func main(){
 
 	apiCfg.db = dbQueries
 	apiCfg.platform = os.Getenv("PLATFORM")
+	apiCfg.secretToken = os.Getenv("SECRET")
+
 
 
 	serveMux.HandleFunc("POST /api/users" , func(w http.ResponseWriter , req *http.Request){
@@ -306,6 +451,12 @@ func main(){
 
 	serveMux.HandleFunc("POST /api/login/" , apiCfg.handlerLogin)
 
+	serveMux.HandleFunc("POST /api/refresh" , apiCfg.handlerRefresh)
+
+	serveMux.HandleFunc("POST /api/revoke" , apiCfg.handlerRevoke)
+
+	serveMux.HandleFunc("PUT /api/users" , apiCfg.handlerUpdateUser)
+
 	serveMux.HandleFunc("GET /api/healthz" , func(w http.ResponseWriter , req *http.Request){
 		w.Header().Set("Content-Type" , "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
@@ -317,4 +468,4 @@ func main(){
 
 
 
-		
+

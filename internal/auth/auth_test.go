@@ -3,8 +3,8 @@ package auth
 import (
 	"testing"
 	"time"
-
 	"github.com/google/uuid"
+	"net/http"
 )
 
 func TestValidJWT (t *testing.T) {
@@ -39,5 +39,21 @@ func TestExpiryJWT (t *testing.T) {
 	if err != nil {
 		t.Errorf("FAIL")
 	}
+}
 
+func TestBearerToken (t *testing.T){
+
+	headers := http.Header{}
+	headers.Set("Authorization" , "Bearer e234")
+
+	want := "e234"
+
+	token , err := GetBearerToken(headers)
+	if err != nil {
+		t.Fatalf("error getting the token")
+	}
+
+	if want != token {
+		t.Errorf("Failed the test")
+	}
 }
