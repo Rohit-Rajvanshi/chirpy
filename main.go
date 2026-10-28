@@ -16,6 +16,7 @@ import (
 	"time"
 	"github.com/google/uuid"
 	"github.com/Rohit-Rajvanshi/chirpy/internal/auth"
+	"sort"
 )
 
 
@@ -163,15 +164,25 @@ func respondwithError(w http.ResponseWriter , code int , msg string) error {
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter , req *http.Request) {
 
 	authorID := req.URL.Query().Get("author_id")
-	parsedUUId , err := uuid.Parse(authorID)
-	if err != nil {
-		respondwithError(w , 500 , "Error Parsing the ID")
-		return 
+	sortMethod := req.URL.Query().Get("sort")
+
+	if sortMethod == ""{
+		sortMethod = "asc"
 	}
+
+
+
+
+	
 
 	Chirps := []database.Chirp{}
 
 	if authorID != "" {
+		parsedUUId , err := uuid.Parse(authorID)
+		if err != nil {
+			respondwithError(w , 500 , "Error Parsing the ID")
+			return
+		}
 		dbChirps , err := cfg.db.GetChirpsForUser(req.Context() , parsedUUId)
 		if err != nil {
 			respondwithError(w , 500 , "Something went wrong")
@@ -199,7 +210,18 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter , req *http.Request
 		})
 	}
 
-	respondwithJSON(w , 200 , chirps)
+	if sortMethod == "asc" {
+		sort.Slice(chirps , func(i , j int) bool {
+			return chirps[i].CreatedAt.Before(chirps[j].CreatedAt)
+		})
+	}else{
+		sort.Slice(chirps , func(i , j int) bool {
+			return chirps[i].CreatedAt.After(chirps[j].CreatedAt)
+		})
+	}
+
+
+	respondwithJSON(w , 200 , chirps )
 
 }
 
