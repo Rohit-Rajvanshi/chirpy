@@ -24,6 +24,7 @@ type apiConfig struct {
 	db *database.Queries
 	platform string 
 	secretToken string 
+	polkaKey string
 }
 
 type User struct {
@@ -160,15 +161,35 @@ func respondwithError(w http.ResponseWriter , code int , msg string) error {
 }
 
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter , req *http.Request) {
-	dbChirps , err := cfg.db.GetChirps(req.Context())
+
+	authorID := req.URL.Query().Get("author_id")
+	parsedUUId , err := uuid.Parse(authorID)
 	if err != nil {
-		respondwithError(w , 500 , "Something went wrong")
+		respondwithError(w , 500 , "Error Parsing the ID")
 		return 
+	}
+
+	Chirps := []database.Chirp{}
+
+	if authorID != "" {
+		dbChirps , err := cfg.db.GetChirpsForUser(req.Context() , parsedUUId)
+		if err != nil {
+			respondwithError(w , 500 , "Something went wrong")
+			return 
+		}
+		Chirps = dbChirps
+	}else{
+		dbChirps , err := cfg.db.GetChirps(req.Context())
+		if err != nil {
+			respondwithError(w , 500 , "Something went wrong")
+			return 
+		}
+		Chirps = dbChirps
 	}
 
 	var chirps []Chirp
 
-	for _ , elem := range dbChirps {
+	for _ , elem := range Chirps {
 		chirps = append(chirps , Chirp{
 			ID: elem.ID ,
 			CreatedAt: elem.CreatedAt,
@@ -422,6 +443,18 @@ func (cfg *apiConfig) handlerDelete(w http.ResponseWriter , req *http.Request) {
 
 
 func (cfg *apiConfig) handlerWebhook (w http.ResponseWriter , req *http.Request) {
+
+	apiKey , err := auth.GetAPIKey(req.Header)
+	if err != nil {
+		respondwithError(w , 401 , "Invalid header")
+		return 
+	}
+
+	if apiKey != cfg.polkaKey {
+		respondwithError(w , 401 , "Forbidden")
+		return 
+	}
+
 	type requestBody struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -432,7 +465,7 @@ func (cfg *apiConfig) handlerWebhook (w http.ResponseWriter , req *http.Request)
 	var rqBody requestBody
 
 	decoder := json.NewDecoder(req.Body)
-	err := decoder.Decode(&rqBody)
+	err = decoder.Decode(&rqBody)
 	if err != nil {
 		respondwithError(w , 401 , "Something went wrong")
 		return
@@ -485,6 +518,7 @@ func main(){
 	apiCfg.db = dbQueries
 	apiCfg.platform = os.Getenv("PLATFORM")
 	apiCfg.secretToken = os.Getenv("SECRET")
+	apiCfg.polkaKey = os.Getenv("POLKA_KEY")
 
 
 
