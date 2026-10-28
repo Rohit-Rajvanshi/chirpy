@@ -33,6 +33,7 @@ type User struct {
 		Email     string    `json:"email"`
 		Token 	  string    `json:"token"`
 		RefreshToken string `json:"refresh_token"`
+		IsChirpyRed bool `json:"is_chirpy_red"`
 	}
 
 type Chirp struct {
@@ -244,6 +245,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter , req *http.Request) {
 	user.CreatedAt = dbUser.CreatedAt
 	user.UpdatedAt = dbUser.UpdatedAt
 	user.Email = dbUser.Email
+	user.IsChirpyRed = dbUser.IsChirpyRed
 	user.Token , err = auth.MakeJWT(user.ID , cfg.secretToken , expiryTime )
 	if err != nil {
 		respondwithError(w , 500 , "Error Creating Token")
@@ -367,11 +369,95 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter , req *http.Reques
 	user.CreatedAt = dbUser.CreatedAt
 	user.UpdatedAt = dbUser.UpdatedAt
 	user.Email = dbUser.Email
+	user.IsChirpyRed = dbUser.IsChirpyRed
+	
 
 
 	respondwithJSON(w , 200 , user)
 
 }
+
+func (cfg *apiConfig) handlerDelete(w http.ResponseWriter , req *http.Request) {
+
+	token , err := auth.GetBearerToken(req.Header)
+	if err != nil {
+		respondwithError(w , 401 , "Invalid Header")
+		return 
+	}
+
+
+	userID , err := auth.ValidateJWT(token , cfg.secretToken)
+	if err != nil {
+		respondwithError(w , 401 , "Error validating the token")
+		return 
+	}
+
+	pathParam := req.PathValue("chirpID")
+	parsedUUID , err := uuid.Parse(pathParam)
+	if err != nil {
+		respondwithError(w , 500 , "Error Parsing the ID")
+		return 
+	}
+
+	dbChirp , err := cfg.db.GetChirpByID(req.Context() , parsedUUID)
+	if err != nil {
+		respondwithError(w , 404 , "Not Found")
+		return 
+	}
+
+
+	if userID != dbChirp.UserID{
+		respondwithError(w , 403 , "Unauthorized Action")
+		return 
+	}
+
+	deleteErr := cfg.db.DeleteChirp(req.Context() , dbChirp.ID)
+	if deleteErr != nil {
+		respondwithError(w , 500 , "error deleting the chirp")
+		return 
+	}
+
+	respondwithJSON(w , 204 , nil)
+}
+
+
+func (cfg *apiConfig) handlerWebhook (w http.ResponseWriter , req *http.Request) {
+	type requestBody struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID string `json:"user_id"`
+		} `json:"data"`
+	}
+
+	var rqBody requestBody
+
+	decoder := json.NewDecoder(req.Body)
+	err := decoder.Decode(&rqBody)
+	if err != nil {
+		respondwithError(w , 401 , "Something went wrong")
+		return
+	}
+
+	if rqBody.Event != "user.upgraded" {
+		respondwithJSON(w , 204 , nil)
+		return 
+	}
+
+	parsedUUID , err := uuid.Parse(rqBody.Data.UserID)
+	if err != nil {
+		respondwithError(w , 500 , "Error Parsing the ID")
+		return 
+	}
+	_  , err = cfg.db.UpgradeMembership(req.Context() , parsedUUID)
+	if err != nil {
+		respondwithError(w , 404 , "Error Fetching the User")
+	}
+
+	respondwithJSON(w , 204 , nil)
+
+}
+
+
 
 
 func main(){
@@ -431,6 +517,7 @@ func main(){
 		user.CreatedAt = dbUser.CreatedAt
 		user.UpdatedAt = dbUser.UpdatedAt
 		user.Email = dbUser.Email
+		user.IsChirpyRed = dbUser.IsChirpyRed
 
 		respondwithJSON(w , 201 , user)
 	})
@@ -456,6 +543,10 @@ func main(){
 	serveMux.HandleFunc("POST /api/revoke" , apiCfg.handlerRevoke)
 
 	serveMux.HandleFunc("PUT /api/users" , apiCfg.handlerUpdateUser)
+
+	serveMux.HandleFunc("DELETE /api/chirps/{chirpID}" , apiCfg.handlerDelete)
+	
+	serveMux.HandleFunc("POST /api/polka/webhooks" , apiCfg.handlerWebhook)
 
 	serveMux.HandleFunc("GET /api/healthz" , func(w http.ResponseWriter , req *http.Request){
 		w.Header().Set("Content-Type" , "text/plain; charset=utf-8")
